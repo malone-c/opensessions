@@ -1,0 +1,11 @@
+# Detached from the repo's root workspace: the plugin builds for wasm32-wasip1
+# while the repo's other crates build for the host target.
+[workspace]
+members = ["core", "plugin"]
+resolver = "2"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

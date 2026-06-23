@@ -1,0 +1,9 @@
+[package]
+name = "opensessions-zellij"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+zellij-tile = "0.44"
+opensessions-zellij-core = { path = "../core" }
