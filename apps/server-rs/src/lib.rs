@@ -357,6 +357,33 @@ struct AgentByCwd {
     ts: u64,
 }
 
+#[derive(Clone)]
+struct GitLocation {
+    repo: Option<String>,
+    branch: Option<String>,
+    worktree: Option<String>,
+    folder: Option<String>,
+}
+
+/// The `/agents` wire shape: an agent plus its resolved git location.
+#[derive(serde::Serialize)]
+struct AgentOut {
+    agent: String,
+    status: AgentStatus,
+    cwd: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thread_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repo: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    worktree: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    folder: Option<String>,
+    ts: u64,
+}
+
 pub struct ReadOnlyMuxStateSource {
     providers: Vec<Arc<dyn MuxProvider>>,
     port_command_runner: Arc<dyn PortCommandRunner>,
@@ -379,6 +406,7 @@ pub struct ReadOnlyMuxStateSource {
     metadata_store: Mutex<SessionMetadataStore>,
     agent_tracker: Mutex<AgentTracker>,
     agents_by_cwd: Mutex<HashMap<String, AgentByCwd>>,
+    git_location_cache: Mutex<HashMap<String, (u64, Option<GitLocation>)>>,
     pi_runtime_registry: Mutex<PiRuntimeRegistry>,
     now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
 }
@@ -441,6 +469,7 @@ impl ReadOnlyMuxStateSource {
             metadata_store: Mutex::new(SessionMetadataStore::new()),
             agent_tracker: Mutex::new(AgentTracker::new()),
             agents_by_cwd: Mutex::new(HashMap::new()),
+            git_location_cache: Mutex::new(HashMap::new()),
             pi_runtime_registry: Mutex::new(PiRuntimeRegistry::with_default_ttl()),
             now_ms: Arc::new(current_time_ms),
         }
@@ -1263,10 +1292,46 @@ impl ReadOnlyMuxStateSource {
     pub fn agents_json(&self) -> String {
         let now = (self.now_ms)();
         let cutoff = now.saturating_sub(5 * 60 * 1000);
-        let mut agents = self.agents_by_cwd.lock().unwrap();
-        agents.retain(|_, entry| entry.ts >= cutoff);
-        let list: Vec<AgentByCwd> = agents.values().cloned().collect();
-        serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_string())
+        let entries: Vec<AgentByCwd> = {
+            let mut agents = self.agents_by_cwd.lock().unwrap();
+            agents.retain(|_, entry| entry.ts >= cutoff);
+            agents.values().cloned().collect()
+        };
+        let out: Vec<AgentOut> = entries
+            .into_iter()
+            .map(|entry| {
+                let location = self.cached_git_location(&entry.cwd, now);
+                AgentOut {
+                    repo: location.as_ref().and_then(|loc| loc.repo.clone()),
+                    branch: location.as_ref().and_then(|loc| loc.branch.clone()),
+                    worktree: location.as_ref().and_then(|loc| loc.worktree.clone()),
+                    folder: location.as_ref().and_then(|loc| loc.folder.clone()),
+                    agent: entry.agent,
+                    status: entry.status,
+                    cwd: entry.cwd,
+                    thread_name: entry.thread_name,
+                    ts: entry.ts,
+                }
+            })
+            .collect();
+        serde_json::to_string(&out).unwrap_or_else(|_| "[]".to_string())
+    }
+
+    /// Git repo/worktree/branch/subfolder for a cwd, cached per cwd (git layout
+    /// rarely changes), so the dashboard can label agents meaningfully.
+    fn cached_git_location(&self, cwd: &str, now_ms: u64) -> Option<GitLocation> {
+        const TTL_MS: u64 = 60_000;
+        if let Some((ts, location)) = self.git_location_cache.lock().unwrap().get(cwd) {
+            if now_ms.saturating_sub(*ts) < TTL_MS {
+                return location.clone();
+            }
+        }
+        let location = git_location(cwd);
+        self.git_location_cache
+            .lock()
+            .unwrap()
+            .insert(cwd.to_string(), (now_ms, location.clone()));
+        location
     }
 
     /// Record (or refresh) an agent's status keyed by its canonical cwd,
@@ -1974,6 +2039,52 @@ fn canonical_cwd(path: &str) -> String {
         Some(rest) => format!("/{rest}"),
         None => trimmed.to_string(),
     }
+}
+
+/// Resolve a cwd to its git repo (from the origin remote), worktree dir, branch,
+/// and the subfolder within the worktree where the agent is open. None when the
+/// cwd isn't in a git repo.
+fn git_location(cwd: &str) -> Option<GitLocation> {
+    let toplevel = git_capture(cwd, &["rev-parse", "--show-toplevel"])?;
+    let branch = git_capture(cwd, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    let worktree = Path::new(&toplevel)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned());
+    let repo = git_capture(cwd, &["remote", "get-url", "origin"])
+        .and_then(|url| repo_name_from_url(&url));
+    let canon_top = canonical_cwd(&toplevel);
+    let folder = canonical_cwd(cwd)
+        .strip_prefix(&canon_top)
+        .map(|rest| rest.trim_start_matches('/').to_string())
+        .filter(|rest| !rest.is_empty());
+    Some(GitLocation {
+        repo,
+        branch,
+        worktree,
+        folder,
+    })
+}
+
+fn git_capture(cwd: &str, args: &[&str]) -> Option<String> {
+    let output = process::Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
+
+fn repo_name_from_url(url: &str) -> Option<String> {
+    url.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .map(|name| name.trim_end_matches(".git").to_string())
+        .filter(|name| !name.is_empty())
 }
 
 /// Real cwds of running `claude` processes, via `ps` + `lsof`. This is the

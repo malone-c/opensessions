@@ -11,6 +11,9 @@ Enter.
   every running `claude` process (by cwd, via `ps`+`lsof`) so idle agents still
   show, and overlays live lifecycle status parsed from Claude transcripts. Served
   at `GET /agents`, keyed by cwd.
+- Each agent is labelled with its git **repo** (from the origin remote),
+  **branch**, **worktree**, and the **folder** within the worktree where it's
+  open — so worktrees and multiple agents in one repo are distinguishable.
 - The plugin polls `/agents` and renders one row per agent — so agents in *any*
   Zellij session appear. It reads current-session pane cwds via `get_pane_cwd`;
   when an agent's cwd matches a current-session pane (marked `↵`), Enter calls

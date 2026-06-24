@@ -80,12 +80,17 @@ pub struct DashboardPane {
     pub cwd: String,
 }
 
-/// An agent reported by the server's `GET /agents`, keyed by cwd.
+/// An agent reported by the server's `GET /agents`, keyed by cwd, with the git
+/// location the server resolved for that cwd.
 pub struct AgentStatusEntry {
     pub cwd: String,
     pub agent: String,
     pub status: AgentStatus,
     pub thread_name: Option<String>,
+    pub repo: Option<String>,
+    pub branch: Option<String>,
+    pub worktree: Option<String>,
+    pub folder: Option<String>,
 }
 
 pub struct AgentRow {
@@ -93,6 +98,10 @@ pub struct AgentRow {
     pub status: AgentStatus,
     pub cwd: String,
     pub thread_name: Option<String>,
+    pub repo: Option<String>,
+    pub branch: Option<String>,
+    pub worktree: Option<String>,
+    pub folder: Option<String>,
     /// Pane to focus on Enter, if this agent has a pane in the current session.
     pub pane_id: Option<u32>,
     pub selected: bool,
@@ -119,6 +128,10 @@ pub fn build_agent_rows(
                 status: status.status,
                 cwd: status.cwd.clone(),
                 thread_name: status.thread_name.clone(),
+                repo: status.repo.clone(),
+                branch: status.branch.clone(),
+                worktree: status.worktree.clone(),
+                folder: status.folder.clone(),
                 pane_id,
                 selected: false,
             }
@@ -141,6 +154,10 @@ mod tests {
             agent: "claude-code".into(),
             status,
             thread_name: None,
+            repo: None,
+            branch: None,
+            worktree: None,
+            folder: None,
         }
     }
 
