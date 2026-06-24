@@ -184,6 +184,10 @@ pub trait StateSource: Send + Sync + 'static {
     fn begin_shutdown(&self) -> Option<String> {
         None
     }
+
+    fn agents_json(&self) -> String {
+        "[]".to_string()
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -1120,6 +1124,10 @@ impl StateSource for ReadOnlyMuxStateSource {
     fn handle_switch_index(&self, index: u32, body: &str) -> Option<String> {
         let client_tty = parse_context(body).and_then(|context| context.client_tty);
         self.switch_visible_index(index, client_tty.as_deref())
+    }
+
+    fn agents_json(&self) -> String {
+        ReadOnlyMuxStateSource::agents_json(self)
     }
 }
 
@@ -2569,6 +2577,21 @@ async fn handle_connection(
         stream
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
             .await?;
+        let _ = stream.shutdown().await;
+        return Ok(());
+    }
+
+    if parsed.method == "GET" && parsed.path == "/agents" {
+        let body = state_source
+            .as_ref()
+            .map(|state_source| state_source.agents_json())
+            .unwrap_or_else(|| "[]".to_string());
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).await?;
         let _ = stream.shutdown().await;
         return Ok(());
     }
