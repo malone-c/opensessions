@@ -341,6 +341,18 @@ struct CachedPortSnapshot {
     ts: u64,
 }
 
+#[derive(Clone, serde::Serialize)]
+struct AgentByCwd {
+    agent: String,
+    status: AgentStatus,
+    cwd: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thread_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_user_prompt: Option<String>,
+    ts: u64,
+}
+
 pub struct ReadOnlyMuxStateSource {
     providers: Vec<Arc<dyn MuxProvider>>,
     port_command_runner: Arc<dyn PortCommandRunner>,
@@ -362,6 +374,7 @@ pub struct ReadOnlyMuxStateSource {
     session_order: Mutex<SessionOrder>,
     metadata_store: Mutex<SessionMetadataStore>,
     agent_tracker: Mutex<AgentTracker>,
+    agents_by_cwd: Mutex<HashMap<String, AgentByCwd>>,
     pi_runtime_registry: Mutex<PiRuntimeRegistry>,
     now_ms: Arc<dyn Fn() -> u64 + Send + Sync>,
 }
@@ -423,6 +436,7 @@ impl ReadOnlyMuxStateSource {
             session_order: Mutex::new(SessionOrder::new(None)),
             metadata_store: Mutex::new(SessionMetadataStore::new()),
             agent_tracker: Mutex::new(AgentTracker::new()),
+            agents_by_cwd: Mutex::new(HashMap::new()),
             pi_runtime_registry: Mutex::new(PiRuntimeRegistry::with_default_ttl()),
             now_ms: Arc::new(current_time_ms),
         }
@@ -1184,6 +1198,23 @@ impl ReadOnlyMuxStateSource {
             ));
             return false;
         }
+        // Retain status keyed by the real cwd so the zellij dashboard can join
+        // on it even when no mux provider attributes the agent to a session.
+        if let Some(project_dir) = snapshot.project_dir.as_deref() {
+            if !project_dir.starts_with("__encoded__:") {
+                self.agents_by_cwd.lock().unwrap().insert(
+                    project_dir.to_string(),
+                    AgentByCwd {
+                        agent: snapshot.agent.to_string(),
+                        status: snapshot.status,
+                        cwd: project_dir.to_string(),
+                        thread_name: snapshot.thread_name.clone(),
+                        last_user_prompt: snapshot.last_user_prompt.clone(),
+                        ts: snapshot.ts,
+                    },
+                );
+            }
+        }
         let Some(session) = self.resolve_agent_watcher_session(&snapshot) else {
             debug_log(format!(
                 "watcher-snapshot unresolved agent={} status={:?} thread_id={:?} thread_name={:?} project_dir={:?}",
@@ -1236,6 +1267,20 @@ impl ReadOnlyMuxStateSource {
             ));
         }
         true
+    }
+
+    pub fn agents_json(&self) -> String {
+        let now = (self.now_ms)();
+        let cutoff = now.saturating_sub(5 * 60 * 1000);
+        let agents: Vec<AgentByCwd> = self
+            .agents_by_cwd
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|entry| entry.ts >= cutoff)
+            .cloned()
+            .collect();
+        serde_json::to_string(&agents).unwrap_or_else(|_| "[]".to_string())
     }
 
     fn resolve_agent_watcher_session(&self, snapshot: &AgentWatcherSnapshot) -> Option<String> {
@@ -3048,5 +3093,25 @@ mod tests {
         };
         let source = default_state_source_from_env(env);
         assert!(source.is_some(), "expected a headless state source under zellij");
+    }
+
+    #[test]
+    fn records_agent_status_by_cwd_without_mux() {
+        let source = ReadOnlyMuxStateSource::new(vec![]).with_now_ms(|| 123);
+        let snapshot = AgentWatcherSnapshot {
+            agent: "claude-code",
+            status: AgentStatus::Running,
+            ts: 123,
+            thread_id: Some("t1".to_string()),
+            thread_name: Some("auth".to_string()),
+            last_user_prompt: Some("fix login".to_string()),
+            project_dir: Some("/Users/me/proj".to_string()),
+        };
+        source.apply_agent_watcher_snapshot(snapshot);
+
+        let json = source.agents_json();
+        assert!(json.contains("\"cwd\":\"/Users/me/proj\""), "got: {json}");
+        assert!(json.contains("\"status\":\"running\""), "got: {json}");
+        assert!(json.contains("\"agent\":\"claude-code\""), "got: {json}");
     }
 }
