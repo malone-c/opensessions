@@ -1206,23 +1206,6 @@ impl ReadOnlyMuxStateSource {
             ));
             return false;
         }
-        // Retain status keyed by the real cwd so the zellij dashboard can join
-        // on it even when no mux provider attributes the agent to a session.
-        if let Some(project_dir) = snapshot.project_dir.as_deref() {
-            if !project_dir.starts_with("__encoded__:") {
-                self.agents_by_cwd.lock().unwrap().insert(
-                    project_dir.to_string(),
-                    AgentByCwd {
-                        agent: snapshot.agent.to_string(),
-                        status: snapshot.status,
-                        cwd: project_dir.to_string(),
-                        thread_name: snapshot.thread_name.clone(),
-                        last_user_prompt: snapshot.last_user_prompt.clone(),
-                        ts: snapshot.ts,
-                    },
-                );
-            }
-        }
         let Some(session) = self.resolve_agent_watcher_session(&snapshot) else {
             debug_log(format!(
                 "watcher-snapshot unresolved agent={} status={:?} thread_id={:?} thread_name={:?} project_dir={:?}",
@@ -1280,15 +1263,34 @@ impl ReadOnlyMuxStateSource {
     pub fn agents_json(&self) -> String {
         let now = (self.now_ms)();
         let cutoff = now.saturating_sub(5 * 60 * 1000);
-        let agents: Vec<AgentByCwd> = self
-            .agents_by_cwd
-            .lock()
-            .unwrap()
-            .values()
-            .filter(|entry| entry.ts >= cutoff)
-            .cloned()
-            .collect();
-        serde_json::to_string(&agents).unwrap_or_else(|_| "[]".to_string())
+        let mut agents = self.agents_by_cwd.lock().unwrap();
+        agents.retain(|_, entry| entry.ts >= cutoff);
+        let list: Vec<AgentByCwd> = agents.values().cloned().collect();
+        serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_string())
+    }
+
+    /// Record (or refresh) an agent's status keyed by its real cwd, independent
+    /// of the watcher dedup gate so a steady-state agent's ts stays fresh.
+    pub fn record_agent_by_cwd(&self, snapshot: &AgentWatcherSnapshot) {
+        let Some(project_dir) = snapshot.project_dir.as_deref() else {
+            return;
+        };
+        // __encoded__: dirs can't be matched against a real pane cwd, so the
+        // dashboard can't use them; this also excludes encoded-only watchers.
+        if project_dir.starts_with("__encoded__:") {
+            return;
+        }
+        self.agents_by_cwd.lock().unwrap().insert(
+            project_dir.to_string(),
+            AgentByCwd {
+                agent: snapshot.agent.to_string(),
+                status: snapshot.status,
+                cwd: project_dir.to_string(),
+                thread_name: snapshot.thread_name.clone(),
+                last_user_prompt: snapshot.last_user_prompt.clone(),
+                ts: snapshot.ts,
+            },
+        );
     }
 
     fn resolve_agent_watcher_session(&self, snapshot: &AgentWatcherSnapshot) -> Option<String> {
@@ -1876,6 +1878,7 @@ async fn run_agent_watcher_loop(
                     if snapshot.status == AgentStatus::Idle {
                         continue;
                     }
+                    source.record_agent_by_cwd(&snapshot);
                     let key = agent_watcher_key(&snapshot);
                     let fingerprint = AgentWatcherFingerprint::from(&snapshot);
                     if last_seen.get(&key) == Some(&fingerprint) {
@@ -3130,11 +3133,30 @@ mod tests {
             last_user_prompt: Some("fix login".to_string()),
             project_dir: Some("/Users/me/proj".to_string()),
         };
-        source.apply_agent_watcher_snapshot(snapshot);
+        source.record_agent_by_cwd(&snapshot);
 
         let json = source.agents_json();
         assert!(json.contains("\"cwd\":\"/Users/me/proj\""), "got: {json}");
         assert!(json.contains("\"status\":\"running\""), "got: {json}");
         assert!(json.contains("\"agent\":\"claude-code\""), "got: {json}");
+
+        // A newer snapshot refreshes the entry's ts.
+        let snapshot2 = AgentWatcherSnapshot {
+            agent: "claude-code",
+            status: AgentStatus::Running,
+            ts: 456,
+            thread_id: Some("t1".to_string()),
+            thread_name: Some("auth".to_string()),
+            last_user_prompt: Some("fix login".to_string()),
+            project_dir: Some("/Users/me/proj".to_string()),
+        };
+        source.record_agent_by_cwd(&snapshot2);
+        let entry = source
+            .agents_by_cwd
+            .lock()
+            .unwrap()
+            .get("/Users/me/proj")
+            .cloned();
+        assert_eq!(entry.map(|e| e.ts), Some(456), "ts should be refreshed");
     }
 }
