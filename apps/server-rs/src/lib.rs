@@ -384,6 +384,22 @@ pub fn default_state_source_from_env(
         return Some(source);
     }
 
+    if env("ZELLIJ_SESSION_NAME").is_some() {
+        // Headless agent-only mode: no mux provider, watchers still run and the
+        // HTTP server still serves. Mux-dependent endpoints become no-ops.
+        let mut source = ReadOnlyMuxStateSource::new(vec![]);
+        let config = env("HOME")
+            .map(PathBuf::from)
+            .map(|home| load_config_from_home(&home));
+        if let Some(width) = config.as_ref().and_then(|config| config.sidebar_width) {
+            source = source.with_sidebar_width(clamp_sidebar_width(width) as u32);
+        }
+        if let Some(height) = config.and_then(|config| config.detail_panel_height) {
+            source = source.with_detail_panel_height(height);
+        }
+        return Some(source);
+    }
+
     None
 }
 
@@ -3018,4 +3034,19 @@ fn clamp_detail_panel_height(height: u16) -> u16 {
 
 fn parse_command(message: &Message) -> Option<Value> {
     serde_json::from_str::<Value>(message.as_text()?).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn state_source_runs_headless_under_zellij() {
+        let env = |key: &str| match key {
+            "ZELLIJ_SESSION_NAME" => Some("main".to_string()),
+            _ => None,
+        };
+        let source = default_state_source_from_env(env);
+        assert!(source.is_some(), "expected a headless state source under zellij");
+    }
 }
