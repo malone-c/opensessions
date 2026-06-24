@@ -18,13 +18,14 @@ pub struct SidebarRow {
     pub selected: bool,
 }
 
+// Snapshot of the alias table in packages/runtime-rs/src/tmux_provider.rs
 const AGENT_ALIASES: &[(&str, &[&str])] = &[
     ("amp", &["amp", "amp-local"]),
     ("claude-code", &["claude", "claude-code"]),
     ("codex", &["codex"]),
     ("gemini", &["gemini"]),
     ("cursor", &["cursor", "cursor-agent"]),
-    ("antigravity", &["agy", "antigravity"]),
+    ("antigravity", &["agy", "antigravity", "antigravity-cli"]),
     ("cline", &["cline"]),
     ("opencode", &["opencode", "open-code"]),
     ("github-copilot", &["copilot", "github-copilot", "ghcs"]),
@@ -32,13 +33,18 @@ const AGENT_ALIASES: &[(&str, &[&str])] = &[
     ("kiro", &["kiro", "kiro-cli"]),
     ("droid", &["droid"]),
     ("grok", &["grok", "grok-build"]),
-    ("pi", &["pi"]),
+    ("hermes", &["hermes", "hermes-agent"]),
+    ("qodercli", &["qodercli", "qoderclicn", "qoder", "qodercn"]),
 ];
 
 /// Match a pane's title or command against known agent CLI names.
 pub fn detect_agent(pane: &PaneSnapshot) -> Option<String> {
+    let title = pane.title.to_lowercase();
     let command = pane.command.clone().unwrap_or_default().to_lowercase();
-    let haystack = format!("{} {}", pane.title.to_lowercase(), command);
+    if title == "pi" || title.starts_with("pi ") || title.starts_with('π') || command == "pi" {
+        return Some("pi".to_string());
+    }
+    let haystack = format!("{} {}", title, command);
     AGENT_ALIASES
         .iter()
         .find(|(_, aliases)| aliases.iter().any(|alias| haystack.contains(alias)))
@@ -114,6 +120,15 @@ mod tests {
         assert_eq!(rows[1].pane_count, 1);
         assert!(rows[1].agents.is_empty());
         assert!(rows[1].selected);
+    }
+
+    #[test]
+    fn pi_agent_avoids_substring_false_positives() {
+        assert_eq!(detect_agent(&pane("pipenv", None)), None);
+        assert_eq!(detect_agent(&pane("pip", Some("pip"))), None);
+        assert_eq!(detect_agent(&pane("pi", None)).as_deref(), Some("pi"));
+        assert_eq!(detect_agent(&pane("pi chat", None)).as_deref(), Some("pi"));
+        assert_eq!(detect_agent(&pane("zsh", Some("pi"))).as_deref(), Some("pi"));
     }
 
     #[test]
