@@ -1279,6 +1279,13 @@ name = "opensessions-zellij-core"
 version = "0.0.0"
 
 [[package]]
+name = "opensessions-zellij-spike"
+version = "0.0.0"
+dependencies = [
+ "zellij-tile",
+]
+
+[[package]]
 name = "openssl-probe"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
