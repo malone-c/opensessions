@@ -68,6 +68,15 @@ pub fn build_rows(sessions: &[SessionSnapshot], selected_index: usize) -> Vec<Si
         .collect()
 }
 
+pub fn move_selection(selected: usize, len: usize, delta: i32) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let last = len - 1;
+    let next = selected as i32 + delta;
+    next.clamp(0, last as i32) as usize
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,5 +114,13 @@ mod tests {
         assert_eq!(rows[1].pane_count, 1);
         assert!(rows[1].agents.is_empty());
         assert!(rows[1].selected);
+    }
+
+    #[test]
+    fn move_selection_clamps_to_bounds() {
+        assert_eq!(move_selection(0, 3, -1), 0);
+        assert_eq!(move_selection(0, 3, 1), 1);
+        assert_eq!(move_selection(2, 3, 1), 2);
+        assert_eq!(move_selection(1, 0, 1), 0);
     }
 }
