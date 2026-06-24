@@ -1271,6 +1271,8 @@ name = "opensessions-zellij"
 version = "0.0.0"
 dependencies = [
  "opensessions-zellij-core",
+ "serde",
+ "serde_json",
  "zellij-tile",
 ]
 

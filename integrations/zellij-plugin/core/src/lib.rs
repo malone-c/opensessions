@@ -83,6 +83,132 @@ pub fn move_selection(selected: usize, len: usize, delta: i32) -> usize {
     next.clamp(0, last as i32) as usize
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AgentStatus {
+    Idle,
+    Running,
+    ToolRunning,
+    Waiting,
+    Done,
+    Error,
+    Interrupted,
+    Stale,
+    Unknown,
+}
+
+impl AgentStatus {
+    pub fn parse(value: &str) -> AgentStatus {
+        match value {
+            "idle" => Self::Idle,
+            "running" => Self::Running,
+            "tool-running" => Self::ToolRunning,
+            "waiting" => Self::Waiting,
+            "done" => Self::Done,
+            "error" => Self::Error,
+            "interrupted" => Self::Interrupted,
+            "stale" => Self::Stale,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Running => "running",
+            Self::ToolRunning => "tool-running",
+            Self::Waiting => "waiting",
+            Self::Done => "done",
+            Self::Error => "error",
+            Self::Interrupted => "interrupted",
+            Self::Stale => "stale",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn glyph(&self) -> &'static str {
+        match self {
+            Self::Running | Self::ToolRunning => "●",
+            Self::Waiting => "◆",
+            Self::Done => "✓",
+            Self::Error => "✗",
+            Self::Idle | Self::Stale | Self::Interrupted | Self::Unknown => "·",
+        }
+    }
+}
+
+/// Normalize a path for cross-source comparison: drop a trailing slash and the
+/// macOS `/private` prefix (so `/private/tmp` and `/tmp` compare equal).
+pub fn canonical_cwd(path: &str) -> String {
+    let trimmed = path.strip_suffix('/').unwrap_or(path);
+    match trimmed.strip_prefix("/private/") {
+        Some(rest) => format!("/{rest}"),
+        None => trimmed.to_string(),
+    }
+}
+
+pub struct DashboardPane {
+    pub pane_id: u32,
+    pub title: String,
+    pub command: Option<String>,
+    pub cwd: String,
+}
+
+pub struct AgentStatusEntry {
+    pub cwd: String,
+    pub agent: String,
+    pub status: AgentStatus,
+    pub thread_name: Option<String>,
+}
+
+pub struct AgentRow {
+    pub pane_id: u32,
+    pub agent: String,
+    pub status: AgentStatus,
+    pub cwd: String,
+    pub thread_name: Option<String>,
+    pub selected: bool,
+}
+
+/// One row per pane that is an agent: either detected by title/command, or whose
+/// cwd matches a server-reported agent. Status comes from the server match, or
+/// Idle when the pane looks like an agent but the server has no live status.
+pub fn build_agent_rows(
+    panes: &[DashboardPane],
+    statuses: &[AgentStatusEntry],
+    selected: usize,
+) -> Vec<AgentRow> {
+    let mut rows = Vec::new();
+    for pane in panes {
+        let canon = canonical_cwd(&pane.cwd);
+        let matched = statuses
+            .iter()
+            .find(|status| canonical_cwd(&status.cwd) == canon);
+        let detected = detect_agent(&PaneSnapshot {
+            title: pane.title.clone(),
+            command: pane.command.clone(),
+            is_plugin: false,
+        });
+        if matched.is_none() && detected.is_none() {
+            continue;
+        }
+        rows.push(AgentRow {
+            pane_id: pane.pane_id,
+            agent: matched
+                .map(|status| status.agent.clone())
+                .or(detected)
+                .unwrap_or_else(|| "agent".to_string()),
+            status: matched.map(|status| status.status).unwrap_or(AgentStatus::Idle),
+            cwd: pane.cwd.clone(),
+            thread_name: matched.and_then(|status| status.thread_name.clone()),
+            selected: false,
+        });
+    }
+    for (index, row) in rows.iter_mut().enumerate() {
+        row.selected = index == selected;
+    }
+    rows
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -137,5 +263,57 @@ mod tests {
         assert_eq!(move_selection(0, 3, 1), 1);
         assert_eq!(move_selection(2, 3, 1), 2);
         assert_eq!(move_selection(1, 0, 1), 0);
+    }
+
+    #[test]
+    fn agent_status_parses_kebab_case_and_unknown() {
+        assert_eq!(AgentStatus::parse("tool-running"), AgentStatus::ToolRunning);
+        assert_eq!(AgentStatus::parse("waiting"), AgentStatus::Waiting);
+        assert_eq!(AgentStatus::parse("nonsense"), AgentStatus::Unknown);
+    }
+
+    #[test]
+    fn canonical_cwd_strips_private_prefix_and_trailing_slash() {
+        assert_eq!(canonical_cwd("/private/tmp"), "/tmp");
+        assert_eq!(canonical_cwd("/Users/cm/proj/"), "/Users/cm/proj");
+        assert_eq!(canonical_cwd("/Users/cm/proj"), "/Users/cm/proj");
+    }
+
+    fn dash_pane(pane_id: u32, title: &str, command: Option<&str>, cwd: &str) -> DashboardPane {
+        DashboardPane {
+            pane_id,
+            title: title.into(),
+            command: command.map(str::to_string),
+            cwd: cwd.into(),
+        }
+    }
+
+    fn status_entry(cwd: &str, agent: &str, status: AgentStatus) -> AgentStatusEntry {
+        AgentStatusEntry { cwd: cwd.into(), agent: agent.into(), status, thread_name: None }
+    }
+
+    #[test]
+    fn build_agent_rows_joins_on_cwd_and_handles_idle_and_filtering() {
+        let panes = vec![
+            // matched via server status, even though it's a bare shell (cwd differs by /private)
+            dash_pane(1, "zsh", Some("zsh"), "/private/tmp/proj"),
+            // detected as claude by command, but no server status -> idle
+            dash_pane(2, "claude", Some("claude"), "/Users/cm/other"),
+            // not an agent and no match -> excluded
+            dash_pane(3, "vim", Some("vim"), "/Users/cm/misc"),
+        ];
+        let statuses = vec![status_entry("/tmp/proj", "claude-code", AgentStatus::ToolRunning)];
+
+        let rows = build_agent_rows(&panes, &statuses, 1);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].pane_id, 1);
+        assert_eq!(rows[0].agent, "claude-code");
+        assert_eq!(rows[0].status, AgentStatus::ToolRunning);
+        assert!(!rows[0].selected);
+
+        assert_eq!(rows[1].pane_id, 2);
+        assert_eq!(rows[1].status, AgentStatus::Idle);
+        assert!(rows[1].selected);
     }
 }
