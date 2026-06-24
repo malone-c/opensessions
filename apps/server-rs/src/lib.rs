@@ -1269,8 +1269,9 @@ impl ReadOnlyMuxStateSource {
         serde_json::to_string(&list).unwrap_or_else(|_| "[]".to_string())
     }
 
-    /// Record (or refresh) an agent's status keyed by its real cwd, independent
-    /// of the watcher dedup gate so a steady-state agent's ts stays fresh.
+    /// Record (or refresh) an agent's status keyed by its canonical cwd,
+    /// independent of the watcher dedup gate so a steady-state agent's ts stays
+    /// fresh. A transcript snapshot always wins over a bare presence entry.
     pub fn record_agent_by_cwd(&self, snapshot: &AgentWatcherSnapshot) {
         let Some(project_dir) = snapshot.project_dir.as_deref() else {
             return;
@@ -1281,7 +1282,7 @@ impl ReadOnlyMuxStateSource {
             return;
         }
         self.agents_by_cwd.lock().unwrap().insert(
-            project_dir.to_string(),
+            canonical_cwd(project_dir),
             AgentByCwd {
                 agent: snapshot.agent.to_string(),
                 status: snapshot.status,
@@ -1291,6 +1292,32 @@ impl ReadOnlyMuxStateSource {
                 ts: snapshot.ts,
             },
         );
+    }
+
+    /// Mark every currently-running Claude process as present: refresh the ts of
+    /// any existing entry (keeping its transcript-derived status), or insert an
+    /// Idle presence entry so idle/waiting agents still appear on the dashboard.
+    pub fn record_claude_presence(&self, cwds: &[String], now_ms: u64) {
+        let mut agents = self.agents_by_cwd.lock().unwrap();
+        for cwd in cwds {
+            let key = canonical_cwd(cwd);
+            match agents.get_mut(&key) {
+                Some(entry) => entry.ts = now_ms,
+                None => {
+                    agents.insert(
+                        key,
+                        AgentByCwd {
+                            agent: "claude-code".to_string(),
+                            status: AgentStatus::Idle,
+                            cwd: cwd.clone(),
+                            thread_name: None,
+                            last_user_prompt: None,
+                            ts: now_ms,
+                        },
+                    );
+                }
+            }
+        }
     }
 
     fn resolve_agent_watcher_session(&self, snapshot: &AgentWatcherSnapshot) -> Option<String> {
@@ -1899,6 +1926,10 @@ async fn run_agent_watcher_loop(
                         ));
                     }
                 }
+                let cwds = tokio::task::spawn_blocking(scan_claude_processes)
+                    .await
+                    .unwrap_or_default();
+                source.record_claude_presence(&cwds, now);
             }
         }
     }
@@ -1933,6 +1964,52 @@ fn agent_watcher_key(snapshot: &AgentWatcherSnapshot) -> String {
             .or(snapshot.project_dir.as_deref())
             .unwrap_or_default(),
     )
+}
+
+/// Normalize a path for cross-source comparison (transcript dir vs process cwd
+/// vs pane cwd): drop a trailing slash and the macOS `/private` prefix.
+fn canonical_cwd(path: &str) -> String {
+    let trimmed = path.strip_suffix('/').unwrap_or(path);
+    match trimmed.strip_prefix("/private/") {
+        Some(rest) => format!("/{rest}"),
+        None => trimmed.to_string(),
+    }
+}
+
+/// Real cwds of running `claude` processes, via `ps` + `lsof`. This is the
+/// presence signal: idle agents stop writing transcripts but their process
+/// keeps running, so they'd otherwise vanish from the dashboard.
+fn scan_claude_processes() -> Vec<String> {
+    let Ok(output) = process::Command::new("ps")
+        .args(["-axo", "pid=,comm="])
+        .output()
+    else {
+        return Vec::new();
+    };
+    let mut cwds = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let line = line.trim();
+        let Some((pid, comm)) = line.split_once(char::is_whitespace) else {
+            continue;
+        };
+        if comm.trim().rsplit('/').next() != Some("claude") {
+            continue;
+        }
+        if let Some(cwd) = claude_process_cwd(pid.trim()) {
+            cwds.push(cwd);
+        }
+    }
+    cwds
+}
+
+fn claude_process_cwd(pid: &str) -> Option<String> {
+    let output = process::Command::new("lsof")
+        .args(["-a", "-d", "cwd", "-p", pid, "-Fn"])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix('n').map(str::to_string))
 }
 
 fn scan_agent_watcher_snapshots(now_ms: u64) -> Vec<AgentWatcherSnapshot> {

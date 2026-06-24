@@ -7,13 +7,14 @@ Enter.
 
 ## How it works
 
-- `opensessions-server` runs headless under Zellij (no tmux needed) and parses
-  Claude transcripts into per-cwd agent status, served at `GET /agents`.
-- The plugin polls `/agents`, reads each pane's cwd via `get_pane_cwd`, and joins
-  them on cwd. Enter calls `focus_pane_with_id` to jump to the matched pane.
-
-Scoped to the current session — Zellij's `SessionUpdate` only surfaces the
-current session's panes to a plugin.
+- `opensessions-server` runs headless under Zellij (no tmux needed). It detects
+  every running `claude` process (by cwd, via `ps`+`lsof`) so idle agents still
+  show, and overlays live lifecycle status parsed from Claude transcripts. Served
+  at `GET /agents`, keyed by cwd.
+- The plugin polls `/agents` and renders one row per agent — so agents in *any*
+  Zellij session appear. It reads current-session pane cwds via `get_pane_cwd`;
+  when an agent's cwd matches a current-session pane (marked `↵`), Enter calls
+  `focus_pane_with_id` to jump to it.
 
 ## Build
 
@@ -47,7 +48,8 @@ Output: `target/wasm32-wasip1/release/opensessions-zellij.wasm`
 ## Keys
 
 - `j` / `Down`, `k` / `Up` — move the selection
-- `Enter` — jump focus to the selected agent's pane
+- `Enter` — jump focus to the selected agent's pane (only rows marked `↵`, whose
+  pane is in the current session — Zellij can't focus panes in other sessions)
 
 ## Test
 
@@ -55,5 +57,7 @@ Output: `target/wasm32-wasip1/release/opensessions-zellij.wasm`
 
 ## Limitations
 
-- Two Claude agents in the **same** cwd can't be told apart by cwd alone.
-- Current session only (Zellij does not expose other sessions' panes to a plugin).
+- Multiple Claude agents in the **same** cwd collapse to one row (cwd is the
+  join key; per-session disambiguation would need agent session ids).
+- Agents whose pane is in another Zellij session show status but aren't jumpable
+  (Zellij doesn't expose other sessions' panes to a plugin).

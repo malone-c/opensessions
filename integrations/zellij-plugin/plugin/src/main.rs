@@ -1,9 +1,9 @@
 //! opensessions zellij plugin — Claude Code agent dashboard.
 //!
-//! Lists agent panes in the current session with live lifecycle status polled
-//! from opensessions-server's `GET /agents` (joined to panes on cwd), and jumps
-//! focus to a pane on Enter. Scoped to the current session: zellij's
-//! SessionUpdate only surfaces the current session's panes to a plugin.
+//! Renders one row per agent reported by opensessions-server's `GET /agents`
+//! (so every running agent shows, regardless of which zellij session holds it),
+//! with live lifecycle status. Enter jumps to the agent's pane when that pane is
+//! in the current session (the only panes a zellij plugin can focus).
 
 use std::collections::BTreeMap;
 
@@ -85,27 +85,29 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, _rows: usize, _cols: usize) {
-        let rows = build_agent_rows(&self.panes, &self.statuses, self.selected);
+        let rows = build_agent_rows(&self.statuses, &self.panes, self.selected);
         let note = if self.server_ok {
             String::new()
         } else {
             "  \u{1b}[2m(server: connecting…)\u{1b}[0m".to_string()
         };
-        println!("\u{1b}[1mclaude agents\u{1b}[0m{note}\n");
+        println!("\u{1b}[1mclaude agents ({})\u{1b}[0m{note}\n", rows.len());
         if rows.is_empty() {
-            println!("\u{1b}[2mno agents in this session\u{1b}[0m");
+            println!("\u{1b}[2mno agents\u{1b}[0m");
             return;
         }
         for row in &rows {
             let (color, glyph) = status_style(row.status);
             let dir = row.cwd.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(&row.cwd);
+            // Faint arrow marks rows whose pane is in this session (Enter jumps).
+            let jump = if row.pane_id.is_some() { "\u{1b}[2m↵\u{1b}[0m " } else { "  " };
             let thread = row
                 .thread_name
                 .as_deref()
                 .map(|name| format!("  \u{1b}[2m{name}\u{1b}[0m"))
                 .unwrap_or_default();
             let line = format!(
-                "{color}{glyph}\u{1b}[0m {} \u{1b}[2m{}\u{1b}[0m  {dir}{thread}",
+                "{jump}{color}{glyph}\u{1b}[0m {} \u{1b}[2m{}\u{1b}[0m  {dir}{thread}",
                 row.agent,
                 row.status.label(),
             );
@@ -131,7 +133,8 @@ impl State {
         );
     }
 
-    /// Collect the current session's terminal panes, resolving each pane's cwd.
+    /// Collect the current session's terminal panes, resolving each pane's cwd
+    /// so agent rows can find a pane to jump to.
     fn rebuild_panes(&mut self, sessions: Vec<SessionInfo>) {
         self.panes.clear();
         let Some(current) = sessions.into_iter().find(|session| session.is_current_session) else {
@@ -144,31 +147,27 @@ impl State {
             let cwd = get_pane_cwd(PaneId::Terminal(pane.id))
                 .map(|path| path.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            self.panes.push(DashboardPane {
-                pane_id: pane.id,
-                title: pane.title.clone(),
-                command: pane.terminal_command.clone(),
-                cwd,
-            });
+            if cwd.is_empty() {
+                continue;
+            }
+            self.panes.push(DashboardPane { pane_id: pane.id, cwd });
         }
-        self.panes.sort_by_key(|pane| pane.pane_id);
     }
 
     fn handle_key(&mut self, key: KeyWithModifier) -> bool {
-        let row_count = build_agent_rows(&self.panes, &self.statuses, self.selected).len();
+        let rows = build_agent_rows(&self.statuses, &self.panes, self.selected);
         match key.bare_key {
             BareKey::Char('j') | BareKey::Down => {
-                self.selected = move_selection(self.selected, row_count, 1);
+                self.selected = move_selection(self.selected, rows.len(), 1);
                 true
             }
             BareKey::Char('k') | BareKey::Up => {
-                self.selected = move_selection(self.selected, row_count, -1);
+                self.selected = move_selection(self.selected, rows.len(), -1);
                 true
             }
             BareKey::Enter => {
-                let rows = build_agent_rows(&self.panes, &self.statuses, self.selected);
-                if let Some(row) = rows.get(self.selected) {
-                    focus_pane_with_id(PaneId::Terminal(row.pane_id), false, false);
+                if let Some(pane_id) = rows.get(self.selected).and_then(|row| row.pane_id) {
+                    focus_pane_with_id(PaneId::Terminal(pane_id), false, false);
                 }
                 false
             }
@@ -177,7 +176,7 @@ impl State {
     }
 
     fn clamp_selection(&mut self) {
-        let row_count = build_agent_rows(&self.panes, &self.statuses, self.selected).len();
+        let row_count = build_agent_rows(&self.statuses, &self.panes, self.selected).len();
         self.selected = self.selected.min(row_count.saturating_sub(1));
     }
 }
