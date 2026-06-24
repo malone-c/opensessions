@@ -7,7 +7,9 @@
 
 use std::collections::BTreeMap;
 
-use opensessions_zellij_core::{build_agent_rows, AgentStatus, AgentStatusEntry, DashboardPane};
+use opensessions_zellij_core::{
+    build_agent_rows, move_selection, AgentStatus, AgentStatusEntry, DashboardPane,
+};
 use serde::Deserialize;
 use zellij_tile::prelude::*;
 
@@ -156,13 +158,11 @@ impl State {
         let row_count = build_agent_rows(&self.panes, &self.statuses, self.selected).len();
         match key.bare_key {
             BareKey::Char('j') | BareKey::Down => {
-                if row_count > 0 {
-                    self.selected = (self.selected + 1).min(row_count - 1);
-                }
+                self.selected = move_selection(self.selected, row_count, 1);
                 true
             }
             BareKey::Char('k') | BareKey::Up => {
-                self.selected = self.selected.saturating_sub(1);
+                self.selected = move_selection(self.selected, row_count, -1);
                 true
             }
             BareKey::Enter => {
