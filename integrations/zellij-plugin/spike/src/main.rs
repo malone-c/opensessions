@@ -70,7 +70,7 @@ impl ZellijPlugin for State {
                 }
                 BareKey::Enter => {
                     if let Some(row) = self.rows.get(self.selected) {
-                        switch_session_with_focus(&row.session, None, Some((row.pane_id, false)));
+                        focus_pane_with_id(PaneId::Terminal(row.pane_id), false, false);
                     }
                     false
                 }
