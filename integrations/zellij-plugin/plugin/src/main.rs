@@ -67,6 +67,14 @@ impl State {
                 }
                 false
             }
+            BareKey::Char('x') => {
+                if let Some(session) = self.sessions.get(self.selected) {
+                    if !session.is_current {
+                        let _ = kill_sessions(&[session.name.clone()]);
+                    }
+                }
+                false
+            }
             _ => false,
         }
     }
