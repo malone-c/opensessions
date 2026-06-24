@@ -1,7 +1,7 @@
 # Detached from the repo's root workspace: the plugin builds for wasm32-wasip1
 # while the repo's other crates build for the host target.
 [workspace]
-members = ["core", "plugin"]
+members = ["core", "plugin", "spike"]
 resolver = "2"
 
 [profile.release]
