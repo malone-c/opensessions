@@ -48,6 +48,11 @@ Output: `target/wasm32-wasip1/release/opensessions-zellij.wasm`
    Grant the permission prompt (ReadApplicationState, ChangeApplicationState,
    WebAccess).
 
+   Config (via `--configuration key=value`):
+   - `server_url` — opensessions-server URL (default `http://127.0.0.1:7391`)
+   - `show_worktree` — `true` to show the worktree dir name on the location line
+     (default `false`; it's redundant with the branch)
+
 ## Keys
 
 - `j` / `Down`, `k` / `Up` — move the selection

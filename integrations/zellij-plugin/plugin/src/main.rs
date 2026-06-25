@@ -18,6 +18,7 @@ const POLL_SECS: f64 = 1.5;
 #[derive(Default)]
 struct State {
     server_url: String,
+    show_worktree: bool,
     pane_ids: Vec<u32>,
     panes: Vec<DashboardPane>,
     statuses: Vec<AgentStatusEntry>,
@@ -50,6 +51,8 @@ impl ZellijPlugin for State {
             .get("server_url")
             .cloned()
             .unwrap_or_else(|| "http://127.0.0.1:7391".to_string());
+        // The worktree dir is redundant with the branch, so hide it by default.
+        self.show_worktree = configuration.get("show_worktree").map(|v| v == "true").unwrap_or(false);
         request_permission(&[
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
@@ -109,7 +112,7 @@ impl ZellijPlugin for State {
             return;
         }
         for row in &rows {
-            for line in agent_lines(row) {
+            for line in agent_lines(row, self.show_worktree) {
                 println!("{line}");
             }
         }
@@ -205,7 +208,7 @@ fn parse_agents(body: &[u8]) -> Vec<AgentStatusEntry> {
 /// One or two display lines for an agent: line 1 is status + repo + branch
 /// (or the folder name when not in a repo); line 2 (when present) is where the
 /// agent is open — worktree/subfolder — plus its thread name.
-fn agent_lines(row: &AgentRow) -> Vec<String> {
+fn agent_lines(row: &AgentRow, show_worktree: bool) -> Vec<String> {
     let (color, glyph) = status_style(row.status);
     let marker = if row.selected { "\u{1b}[1m\u{276f}\u{1b}[0m" } else { " " };
     let jump = if row.pane_id.is_some() { "\u{1b}[2m↵\u{1b}[0m" } else { " " };
@@ -232,8 +235,10 @@ fn agent_lines(row: &AgentRow) -> Vec<String> {
     let mut lines = vec![line1];
 
     let mut location = Vec::new();
-    if let Some(worktree) = &row.worktree {
-        location.push(worktree.as_str());
+    if show_worktree {
+        if let Some(worktree) = &row.worktree {
+            location.push(worktree.as_str());
+        }
     }
     if let Some(folder) = &row.folder {
         location.push(folder.as_str());
