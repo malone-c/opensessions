@@ -64,6 +64,9 @@ impl ZellijPlugin for State {
             EventType::Timer,
             EventType::WebRequestResult,
         ]);
+        // Pin self so the floating dashboard stays on top of the work panes.
+        let ids = get_plugin_ids();
+        set_floating_pane_pinned(PaneId::Plugin(ids.plugin_id), true);
         self.fetch_agents();
         set_timeout(POLL_SECS);
     }
@@ -176,6 +179,10 @@ impl State {
                 if let Some(pane_id) = rows.get(self.selected).and_then(|row| row.pane_id) {
                     focus_pane_with_id(PaneId::Terminal(pane_id), false, false);
                 }
+                false
+            }
+            BareKey::Char('q') | BareKey::Esc => {
+                hide_self();
                 false
             }
             _ => false,

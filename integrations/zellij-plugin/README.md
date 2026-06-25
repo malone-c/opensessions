@@ -58,6 +58,29 @@ Output: `target/wasm32-wasip1/release/opensessions-zellij.wasm`
 - `j` / `Down`, `k` / `Up` — move the selection
 - `Enter` — jump focus to the selected agent's pane (only rows marked `↵`, whose
   pane is in the current session — Zellij can't focus panes in other sessions)
+- `q` / `Esc` — hide the dashboard (when run as a floating panel; see below)
+
+## Persistent floating sidebar
+
+Run it as a pinned floating panel you can summon in any tab and dismiss
+independently. Add a keybind to `~/.config/zellij/config.kdl`:
+
+```kdl
+keybinds {
+    shared {
+        bind "Alt o" {
+            LaunchOrFocusPlugin "file:/ABSOLUTE/PATH/opensessions-zellij.wasm" {
+                floating true
+                move_to_focused_tab true
+            }
+        }
+    }
+}
+```
+
+`Alt o` summons the dashboard floating over your current tab (it pins itself on
+top and follows you between tabs); `q`/`Esc` hides it; `Alt o` again brings it
+back. Keep it in your work session so `Enter` can jump to agent panes.
 
 ## Test
 
